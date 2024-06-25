@@ -3764,8 +3764,16 @@ export class WhisperTokenizer extends PreTrainedTokenizer {
                         let start_time = round(token_timestamps[i] + time_offset, 2);
 
                         let end_time;
+                        let regex = /[!.,;?]+$/
+                        let decoded_text = this.decode([token]);
+
                         if (i + 1 < token_timestamps.length) {
                             end_time = round(token_timestamps[i + 1] + time_offset, 2);
+
+                            // If the token is a punctuation mark, we can assume it's the end of a word in most cases
+                            if (regex.test(decoded_text)) {
+                                end_time = round(start_time + 0.02, 2); // +0.02 to avoid overlapping timestamps
+                              }
                         } else {
                             // should never happen
                             end_time = null;
