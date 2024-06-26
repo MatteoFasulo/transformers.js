@@ -1450,6 +1450,14 @@ export class PreTrainedModel extends Callable {
         // - GenerationMode.BEAM_SEARCH
         // - GenerationMode.BEAM_SAMPLE
         ////////////////////////////////////////////////////
+
+        // Store the attentions (or attentions for each layer)
+        let decoder_attentions = [[]]
+        let cross_attentions = [[]]
+
+        // Store the logits
+        let logits = []
+
         let past_key_values = null;
         while (true) {
             // prepare model inputs
@@ -1461,9 +1469,9 @@ export class PreTrainedModel extends Callable {
             // In most cases, this will be [batch_size, 1, vocab_size]
             // So, we select the last token's logits:
             // (equivalent to `logits = outputs.logits[:, -1, :]`)
-            const logits = outputs.logits.slice(null, -1, null);
-
-            const next_tokens_scores = prepared_logits_processor(all_input_ids, logits);
+            const logitss = outputs.logits.slice(null, -1, null);
+            logits.push(logitss)
+            const next_tokens_scores = prepared_logits_processor(all_input_ids, logitss);
 
             /** @type {[bigint][]} */
             const generated_input_ids = [];
@@ -1501,11 +1509,30 @@ export class PreTrainedModel extends Callable {
             model_inputs = this._update_model_kwargs_for_generation({
                 generated_input_ids, outputs, model_inputs, is_encoder_decoder,
             });
+            // Store current attentions
+            let dec_attentions = []
+            let cr_attentions = []
+
+            // Fetch attentions
+            const attentions = this.getAttentions(outputs);
+
+            // Iterate over each layer and store the attentions in the appropriate list
+            for (let i = 0; i < attentions.decoder_attentions.length; ++i) {
+                let decoder_attention_tensor = attentions.decoder_attentions[i];
+                let cross_attention_tensor = attentions.cross_attentions[i];
+                dec_attentions.push(new Tensor("float32", decoder_attention_tensor.data, decoder_attention_tensor.dims))
+                cr_attentions.push(new Tensor("float32", cross_attention_tensor.data, cross_attention_tensor.dims))
+            }
+            // Store attentions into the list
+            decoder_attentions[0].push(dec_attentions)
+            cross_attentions[0].push(cr_attentions)
         }
 
         if (streamer) {
             streamer.end();
         }
+
+        console.log({decoder_attentions, cross_attentions})
 
         // TODO: ensure all_input_ids is padded correctly...
         const sequences = new Tensor('int64', all_input_ids.flat(), [all_input_ids.length, all_input_ids[0].length]);
@@ -1514,10 +1541,10 @@ export class PreTrainedModel extends Callable {
             return {
                 sequences,
                 past_key_values,
-                // TODO:
-                // scores,
-                // logits,
-                // attentions,
+                scores,
+                logits,
+                decoder_attentions,
+                cross_attentions,
             }
         } else {
             return sequences;
@@ -3237,6 +3264,14 @@ export class WhisperForConditionalGeneration extends WhisperPreTrainedModel {
             ...kwargs
         });
 
+        if (generation_config.return_token_timestamps && generation_config.alignment_heads) {
+            outputs["token_timestamps"] = this._extract_token_timestamps(
+                outputs,
+                generation_config.alignment_heads,
+                generation_config.num_frames,
+            )
+        }
+
         return outputs;
     }
 
@@ -3312,7 +3347,7 @@ export class WhisperForConditionalGeneration extends WhisperPreTrainedModel {
             return matrix;
         });
 
-        const timestampsShape = [generate_outputs.sequences.length, generate_outputs.sequences[0].length];
+        const timestampsShape = [generate_outputs.sequences.dims[0], generate_outputs.sequences.dims[1]];
 
         const timestamps = new Tensor(
             'float32',
